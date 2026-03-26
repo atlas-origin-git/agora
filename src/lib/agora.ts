@@ -33,28 +33,35 @@ export interface SessionConfig {
 }
 
 // Extract text from API response, handling thinking blocks (MiniMax returns thinking blocks)
-// Socrates: extract just the actual question (no internal reasoning)
-// Oracle: extract the substantive answer
+// Priority: text blocks first, then extract from thinking blocks
 function extractText(content: { type: string; text?: string; thinking?: string }[]): string {
-  const parts: string[] = [];
+  const textParts: string[] = [];
+  const thinkingParts: string[] = [];
+
   for (const block of content) {
     if (block.type === 'text') {
-      parts.push(block.text || '');
+      const text = (block.text || '').trim();
+      if (text) textParts.push(text);
     } else if (block.type === 'thinking') {
-      const thinking = block.thinking || '';
-      // Extract just the question: find the last sentence that ends with ? and is < 250 chars
-      // This removes internal reasoning while keeping the actual question
-      const sentences = thinking.split(/(?<=[.!?])\s+/).filter(s => s.trim());
-      const question = sentences.reverse().find(s => s.trim().endsWith('?') && s.trim().length < 250);
-      if (question) {
-        parts.push(question.trim());
-      } else {
-        // Last resort: get the last 300 chars which likely contains the answer
-        parts.push(thinking.slice(-300).trim());
-      }
+      const thinking = (block.thinking || '').trim();
+      if (thinking) thinkingParts.push(thinking);
     }
   }
-  return parts.join('\n').trim();
+
+  // If we have text blocks, return them (text blocks are the actual synthesized answer)
+  if (textParts.length > 0) {
+    return textParts.join('\n').trim();
+  }
+
+  // Fallback: extract from thinking blocks
+  // For questions: find the last sentence that ends with ? and is < 250 chars
+  const thinking = thinkingParts.join('\n');
+  const sentences = thinking.split(/(?<=[.!?])\s+/).filter(s => s.trim());
+  const question = sentences.reverse().find(s => s.trim().endsWith('?') && s.trim().length < 250);
+  if (question) {
+    return question.trim();
+  }
+  return thinking.slice(-300).trim();
 }
 
 function buildDialogueHistory(history: DialogueHistoryEntry[]): string {
