@@ -33,8 +33,8 @@ export interface SessionConfig {
 }
 
 // Extract text from API response, handling thinking blocks (MiniMax returns thinking blocks)
-// For Socrates: extract the actual question from the thinking content
-// For Oracle: extract the substantive answer
+// Socrates: extract just the actual question (no internal reasoning)
+// Oracle: extract the substantive answer
 function extractText(content: { type: string; text?: string; thinking?: string }[]): string {
   const parts: string[] = [];
   for (const block of content) {
@@ -42,25 +42,15 @@ function extractText(content: { type: string; text?: string; thinking?: string }
       parts.push(block.text || '');
     } else if (block.type === 'thinking') {
       const thinking = block.thinking || '';
-      // For questions: find the last line that looks like a direct question (short line ending in ?)
-      const lines = thinking.split('\n').map(s => s.trim()).filter(Boolean);
-      // Look for a line that is a direct question (short, ends with ?, no long leading whitespace)
-      const questionLine = lines.reverse().find(line =>
-        line.length < 200 && line.endsWith('?') && !line.startsWith('#')
-      );
-      if (questionLine) {
-        parts.push(questionLine);
+      // Extract just the question: find the last sentence that ends with ? and is < 250 chars
+      // This removes internal reasoning while keeping the actual question
+      const sentences = thinking.split(/(?<=[.!?])\s+/).filter(s => s.trim());
+      const question = sentences.reverse().find(s => s.trim().endsWith('?') && s.trim().length < 250);
+      if (question) {
+        parts.push(question.trim());
       } else {
-        // Fallback: find last sentence ending in ? within a reasonable char limit
-        const lastQIdx = thinking.lastIndexOf('?');
-        if (lastQIdx > 0) {
-          // Get ~200 chars before the ?
-          const start = Math.max(0, lastQIdx - 200);
-          const excerpt = thinking.slice(start, lastQIdx + 1).trim();
-          parts.push(excerpt);
-        } else {
-          parts.push(thinking.slice(-500));
-        }
+        // Last resort: get the last 300 chars which likely contains the answer
+        parts.push(thinking.slice(-300).trim());
       }
     }
   }
