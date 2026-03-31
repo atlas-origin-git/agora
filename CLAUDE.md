@@ -151,6 +151,48 @@ npm start -- -p 3003
 - Exposed via Cloudflare Tunnel at `agora.atlas-origin.com`
 - Protected by Cloudflare Access (email-based auth)
 
+## Git Workflow
+
+When asked to push to git, commit, or save progress:
+
+```bash
+# 1. Stage all changes
+git add -A
+
+# 2. Commit with a descriptive message using conventional commits
+git commit -m "type: short description
+
+Optional longer explanation of what changed and why."
+
+# 3. Push to origin main
+git push origin main
+```
+
+### Conventional commit types:
+- `feat:` — new feature or functionality
+- `fix:` — bug fix
+- `docs:` — documentation changes only
+- `refactor:` — code restructuring without behavior change
+- `style:` — UI/CSS changes
+- `chore:` — build, config, dependency updates
+
+### Rules:
+- **Always `git add -A`** before committing (don't miss new files)
+- **Always push to `origin main`** — this is the only branch
+- **Never force push** (`--force`)
+- **Write meaningful commit messages** — not "update" or "changes"
+- If there are no changes to commit, say so — don't create empty commits
+
+### Example:
+```bash
+git add -A
+git commit -m "feat: add heartbeat events to SSE stream
+
+Send periodic keepalive events during AI processing
+to prevent browser/proxy timeout on long rounds."
+git push origin main
+```
+
 ## Vision (Beyond PoC)
 
 The bigger vision is a platform where:
