@@ -1,4 +1,4 @@
-export type DialogueRole = 'socrates' | 'oracle' | 'synthesis' | 'user-redirect' | 'user-context';
+export type DialogueRole = 'socrates' | 'oracle' | 'commentary' | 'user-redirect' | 'user-context';
 
 export interface Message {
   id: string;
@@ -12,8 +12,7 @@ export interface Round {
   roundNumber: number;
   socratesQuestion: string;
   oracleAnswer: string;
-  synthesisUpdate: string;
-  quickTake?: string;
+  commentary: string;
 }
 
 export interface SessionState {
@@ -38,8 +37,11 @@ export interface SSEEvent {
     | 'socrates_complete'
     | 'oracle_streaming'
     | 'oracle_complete'
-    | 'synthesis_update'
+    | 'commentary_complete'
     | 'round_complete'
+    | 'synthesis_thinking'
+    | 'synthesis_delta'
+    | 'synthesis_complete'
     | 'user_injection_acknowledged'
     | 'session_complete'
     | 'error'

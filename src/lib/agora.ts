@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import {
   SocratesSystemPrompt,
   OracleSystemPrompt,
+  CommentarySystemPrompt,
   SynthesisSystemPrompt,
   OffTopicSystemPrompt,
 } from './prompts';
@@ -40,13 +41,6 @@ export interface DialogueHistoryEntry {
   content: string;
 }
 
-export interface RoundResult {
-  socratesQuestion: string;
-  oracleAnswer: string;
-  synthesisUpdate: string;
-  quickTake: string;
-}
-
 export interface SessionConfig {
   question: string;
   domain: string;
@@ -56,37 +50,21 @@ export interface SessionConfig {
   dialogueHistory?: DialogueHistoryEntry[];
 }
 
-// Extract text from API response, handling thinking blocks (MiniMax returns thinking blocks)
-// Priority: text blocks first, then extract from thinking blocks
-function extractText(content: { type: string; text?: string; thinking?: string }[]): string {
-  const textParts: string[] = [];
-  const thinkingParts: string[] = [];
-
-  for (const block of content) {
-    if (block.type === 'text') {
-      const text = (block.text || '').trim();
-      if (text) textParts.push(text);
-    } else if (block.type === 'thinking') {
-      const thinking = (block.thinking || '').trim();
-      if (thinking) thinkingParts.push(thinking);
-    }
-  }
-
-  // If we have text blocks, return them (text blocks are the actual synthesized answer)
-  if (textParts.length > 0) {
-    return textParts.join('\n').trim();
-  }
-
-  // Fallback: extract from thinking blocks
-  // For questions: find the last sentence that ends with ? and is < 250 chars
-  const thinking = thinkingParts.join('\n');
-  const sentences = thinking.split(/(?<=[.!?])\s+/).filter(s => s.trim());
-  const question = sentences.reverse().find(s => s.trim().endsWith('?') && s.trim().length < 250);
-  if (question) {
-    return question.trim();
-  }
-  return thinking.slice(-300).trim();
-}
+export type StreamEvent =
+  | { type: 'session_started'; data: { sessionId: string; question: string; domain: string; maxRounds: number } }
+  | { type: 'socrates_thinking' }
+  | { type: 'socrates_delta'; data: { text: string } }
+  | { type: 'socrates_complete'; data: { text: string } }
+  | { type: 'oracle_thinking' }
+  | { type: 'oracle_delta'; data: { text: string } }
+  | { type: 'oracle_complete'; data: { text: string } }
+  | { type: 'commentary_complete'; data: { text: string; round: number } }
+  | { type: 'round_complete'; data: { roundNumber: number } }
+  | { type: 'synthesis_thinking' }
+  | { type: 'synthesis_delta'; data: { text: string } }
+  | { type: 'synthesis_complete'; data: { text: string } }
+  | { type: 'session_complete'; data: { synthesis: string; questions: string[] } }
+  | { type: 'error'; data: { message: string } };
 
 function buildDialogueHistory(history: DialogueHistoryEntry[]): string {
   if (history.length === 0) return 'No previous exchanges.';
@@ -100,79 +78,31 @@ function buildOracleContext(userContext: string | null | undefined): string {
   return `\n\nAdditional user context to incorporate:\n${userContext}`;
 }
 
-export async function callSocrates(
-  question: string,
-  dialogueHistory: DialogueHistoryEntry[],
-  currentRound: number
+// Stream a message and call onDelta for each text token. Returns the full text.
+async function streamMessage(
+  params: {
+    model: string;
+    max_tokens: number;
+    system: ReturnType<typeof wrapSystem>;
+    messages: { role: 'user' | 'assistant'; content: string }[];
+  },
+  onDelta: (text: string) => void
 ): Promise<string> {
-  const prompt = SocratesSystemPrompt
-    .replace('{{USER_QUESTION}}', question)
-    .replace('{{CURRENT_ROUND}}', String(currentRound))
-    .replace('{{DIALOGUE_HISTORY}}', buildDialogueHistory(dialogueHistory));
-
-  const msg = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 1024,
-    system: wrapSystem(prompt),
-    messages: [{ role: 'user', content: 'Begin the dialogue.' }],
+  const stream = anthropic.messages.stream({
+    model: params.model,
+    max_tokens: params.max_tokens,
+    system: params.system,
+    messages: params.messages,
   });
 
-  return extractText(msg.content);
-}
-
-export async function callOracle(
-  socratesQuestion: string,
-  userQuestion: string,
-  dialogueHistory: DialogueHistoryEntry[],
-  userContext: string | null | undefined,
-  currentRound: number
-): Promise<string> {
-  const historyText = buildDialogueHistory(dialogueHistory);
-  const contextText = buildOracleContext(userContext);
-
-  const prompt = OracleSystemPrompt
-    .replace('{{SOCRATES_QUESTION}}', socratesQuestion)
-    .replace('{{USER_QUESTION}}', userQuestion)
-    .replace('{{DIALOGUE_HISTORY}}', historyText)
-    .replace('{{USER_CONTEXT}}', contextText);
-
-  const msg = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 1024,
-    system: wrapSystem(prompt),
-    messages: [{ role: 'user', content: socratesQuestion }],
+  let fullText = '';
+  stream.on('text', (text) => {
+    fullText += text;
+    onDelta(text);
   });
 
-  return extractText(msg.content);
-}
-
-export async function callSynthesis(
-  socratesQuestion: string,
-  oracleAnswer: string,
-  userQuestion: string
-): Promise<{ synthesis: string; quickTake: string }> {
-  const prompt = SynthesisSystemPrompt
-    .replace('{{SOCRATES_QUESTION}}', socratesQuestion)
-    .replace('{{ORACLE_ANSWER}}', oracleAnswer)
-    .replace('{{USER_QUESTION}}', userQuestion);
-
-  const msg = await anthropic.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 1024,
-    system: wrapSystem(prompt),
-    messages: [{ role: 'user', content: `Socrates: ${socratesQuestion}\n\nOracle: ${oracleAnswer}` }],
-  });
-
-  const raw = extractText(msg.content);
-
-  // Parse quick take from synthesis
-  const quickTakeMatch = raw.match(/QUICK_TAKE:\s*(.+?)(?:\n---|\nSYNTHESIS:|$)/i);
-  const synthesisMatch = raw.match(/SYNTHESIS:[\s\n]*(What's happening:.+)/i);
-
-  const quickTake = quickTakeMatch ? quickTakeMatch[1].trim() : raw.slice(0, 120) + '...';
-  const synthesis = synthesisMatch ? synthesisMatch[1].trim() : raw;
-
-  return { synthesis, quickTake };
+  await stream.finalMessage();
+  return fullText.trim();
 }
 
 export async function callOffTopicCheck(question: string): Promise<{
@@ -187,19 +117,16 @@ export async function callOffTopicCheck(question: string): Promise<{
     messages: [{ role: 'user', content: `Question: ${question}` }],
   });
 
-  const raw = extractText(msg.content).trim();
-
-  if (raw.startsWith('OFF_TOPIC:')) {
-    return { isOffTopic: true, reason: raw.replace('OFF_TOPIC:', '').trim() };
+  const textParts = msg.content.filter(b => b.type === 'text').map(b => ('text' in b ? b.text : '')).join('').trim();
+  if (textParts.startsWith('OFF_TOPIC:')) {
+    return { isOffTopic: true, reason: textParts.replace('OFF_TOPIC:', '').trim() };
   }
   return { isOffTopic: false };
 }
 
 export async function runSession(
   config: SessionConfig,
-  onRound: (round: RoundResult) => Promise<void>,
-  onComplete: (summary: { quickTake: string; synthesis: string; questions: string[] }) => Promise<void>,
-  onError: (error: string) => void,
+  emit: (event: StreamEvent) => void,
   signal?: AbortSignal
 ): Promise<void> {
   const maxRounds = config.maxRounds ?? 5;
@@ -209,98 +136,143 @@ export async function runSession(
   const socratesQuestions: string[] = [];
 
   try {
-    // Calculate start round from existing dialogue history (Bug 2: resume replays all rounds)
     const startRound = Math.floor(dialogueHistory.length / 2) + 1;
 
     for (let round = startRound; round <= maxRounds; round++) {
       if (signal?.aborted) {
-        onError('Session aborted by user');
+        emit({ type: 'error', data: { message: 'Session aborted by user' } });
         return;
       }
 
-      // Build effective question — prepend redirect if any
       const effectiveQuestion = currentRedirect
         ? `${currentRedirect}\n\nPlease reframe your next question around this direction.`
         : config.question;
       currentRedirect = null;
 
-      // Socrates asks
-      const socratesQ = await callSocrates(
-        effectiveQuestion,
-        dialogueHistory,
-        round
+      // --- Socrates ---
+      emit({ type: 'socrates_thinking' });
+
+      const socratesPrompt = SocratesSystemPrompt
+        .replace('{{USER_QUESTION}}', effectiveQuestion)
+        .replace('{{CURRENT_ROUND}}', String(round))
+        .replace('{{DIALOGUE_HISTORY}}', buildDialogueHistory(dialogueHistory));
+
+      const socratesMessages: { role: 'user' | 'assistant'; content: string }[] = [];
+      for (let i = 0; i < dialogueHistory.length; i += 2) {
+        const q = dialogueHistory[i];
+        const a = dialogueHistory[i + 1];
+        if (q && a) {
+          socratesMessages.push({ role: 'assistant', content: q.content });
+          socratesMessages.push({ role: 'user', content: `Oracle answered: ${a.content}\n\nNow ask your next question.` });
+        }
+      }
+      socratesMessages.push({
+        role: 'user',
+        content: socratesMessages.length === 0
+          ? `Begin the dialogue about: ${effectiveQuestion}`
+          : 'Ask your next question — probe a NEW dimension not yet covered above.',
+      });
+
+      const socratesQ = await streamMessage(
+        { model: 'claude-sonnet-4-20250514', max_tokens: 1024, system: wrapSystem(socratesPrompt), messages: socratesMessages },
+        (delta) => emit({ type: 'socrates_delta', data: { text: delta } })
       );
+      emit({ type: 'socrates_complete', data: { text: socratesQ } });
       socratesQuestions.push(socratesQ);
 
       if (signal?.aborted) return;
 
-      // Oracle answers
-      const oracleA = await callOracle(
-        socratesQ,
-        config.question,
-        dialogueHistory,
-        currentContext,
-        round
-      );
+      // --- Oracle ---
+      emit({ type: 'oracle_thinking' });
+
+      const oraclePrompt = OracleSystemPrompt
+        .replace('{{SOCRATES_QUESTION}}', socratesQ)
+        .replace('{{USER_QUESTION}}', config.question)
+        .replace('{{DIALOGUE_HISTORY}}', buildDialogueHistory(dialogueHistory))
+        .replace('{{USER_CONTEXT}}', buildOracleContext(currentContext));
       currentContext = null;
+
+      const oracleMessages: { role: 'user' | 'assistant'; content: string }[] = [];
+      for (let i = 0; i < dialogueHistory.length; i += 2) {
+        const q = dialogueHistory[i];
+        const a = dialogueHistory[i + 1];
+        if (q && a) {
+          oracleMessages.push({ role: 'user', content: q.content });
+          oracleMessages.push({ role: 'assistant', content: a.content });
+        }
+      }
+      oracleMessages.push({ role: 'user', content: socratesQ });
+
+      const oracleA = await streamMessage(
+        { model: 'claude-sonnet-4-20250514', max_tokens: 1024, system: wrapSystem(oraclePrompt), messages: oracleMessages },
+        (delta) => emit({ type: 'oracle_delta', data: { text: delta } })
+      );
+      emit({ type: 'oracle_complete', data: { text: oracleA } });
 
       if (signal?.aborted) return;
 
-      // Synthesis
-      const { synthesis, quickTake } = await callSynthesis(
-        socratesQ,
-        oracleA,
-        config.question
+      // --- Commentary (lightweight per-round narration) ---
+      const commentaryPrompt = CommentarySystemPrompt
+        .replace('{{SOCRATES_QUESTION}}', socratesQ)
+        .replace('{{ORACLE_ANSWER}}', oracleA)
+        .replace('{{USER_QUESTION}}', config.question)
+        .replace('{{CURRENT_ROUND}}', String(round))
+        .replace('{{MAX_ROUNDS}}', String(maxRounds));
+
+      const commentary = await streamMessage(
+        {
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 200,
+          system: wrapSystem(commentaryPrompt),
+          messages: [{ role: 'user', content: `Socrates: ${socratesQ}\n\nOracle: ${oracleA}` }],
+        },
+        () => {} // don't stream deltas for commentary — it's short enough to send complete
       );
+      emit({ type: 'commentary_complete', data: { text: commentary, round } });
 
       // Accumulate dialogue history
       dialogueHistory.push({ role: 'user', content: socratesQ });
       dialogueHistory.push({ role: 'assistant', content: oracleA });
 
-      const roundResult: RoundResult = {
-        socratesQuestion: socratesQ,
-        oracleAnswer: oracleA,
-        synthesisUpdate: synthesis,
-        quickTake,
-      };
-
-      await onRound(roundResult);
+      emit({ type: 'round_complete', data: { roundNumber: round } });
     }
 
-    // Session complete — generate a real final synthesis from the full dialogue
-    let finalQuickTake = 'The dialogue has concluded.';
+    // --- Final synthesis: the actual answer to the user's question ---
     let finalSynthesis = '';
 
     if (dialogueHistory.length >= 2) {
-      // Build a combined Q&A summary for the synthesis call
       const allQA = [];
       for (let i = 0; i < dialogueHistory.length; i += 2) {
         if (dialogueHistory[i] && dialogueHistory[i + 1]) {
-          allQA.push(`Q: ${dialogueHistory[i].content}\nA: ${dialogueHistory[i + 1].content}`);
+          allQA.push(`**Round ${Math.floor(i / 2) + 1}**\nQuestion: ${dialogueHistory[i].content}\nAnswer: ${dialogueHistory[i + 1].content}`);
         }
       }
-      const combinedDialogue = allQA.join('\n\n');
+      const combinedDialogue = allQA.join('\n\n---\n\n');
 
       try {
-        const { synthesis, quickTake } = await callSynthesis(
-          `Final synthesis of the complete dialogue:\n${combinedDialogue}`,
-          `This is the final summary of ${socratesQuestions.length} rounds of Socratic dialogue about: ${config.question}`,
-          config.question
+        emit({ type: 'synthesis_thinking' });
+
+        const finalPrompt = SynthesisSystemPrompt
+          .replace('{{USER_QUESTION}}', config.question)
+          .replace('{{DIALOGUE}}', combinedDialogue);
+
+        finalSynthesis = await streamMessage(
+          {
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 2048,
+            system: wrapSystem(finalPrompt),
+            messages: [{ role: 'user', content: `Synthesize the answer to my question: ${config.question}` }],
+          },
+          (delta) => emit({ type: 'synthesis_delta', data: { text: delta } })
         );
-        finalQuickTake = quickTake;
-        finalSynthesis = synthesis;
+        emit({ type: 'synthesis_complete', data: { text: finalSynthesis } });
       } catch {
-        // Fallback if synthesis call fails
         finalSynthesis = `Session explored ${socratesQuestions.length} rounds of dialogue.\n\n${socratesQuestions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`;
       }
     }
 
-    await onComplete({
-      quickTake: finalQuickTake,
-      synthesis: finalSynthesis,
-      questions: socratesQuestions,
-    });
+    emit({ type: 'session_complete', data: { synthesis: finalSynthesis, questions: socratesQuestions } });
   } catch (err) {
-    onError(err instanceof Error ? err.message : 'Unknown error');
+    emit({ type: 'error', data: { message: err instanceof Error ? err.message : 'Unknown error' } });
   }
 }

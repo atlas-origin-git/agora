@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { runSession, DialogueHistoryEntry, RoundResult } from '@/lib/agora';
+import { runSession, DialogueHistoryEntry, StreamEvent } from '@/lib/agora';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -33,25 +33,26 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
-    // Build a simple session ID
     const sessionId = `agora-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     const stream = new ReadableStream({
       async start(controller) {
-        const send = (event: string, data: unknown) => {
+        const send = (eventType: string, data: unknown) => {
           controller.enqueue(
-            encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+            encoder.encode(`event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`)
           );
         };
 
-        const sendText = (event: string, text: string, round?: number) => {
-          controller.enqueue(
-            encoder.encode(`event: ${event}\ndata: ${JSON.stringify({ text, round })}\n\n`)
-          );
+        const emit = (event: StreamEvent) => {
+          if ('data' in event) {
+            send(event.type, event.data);
+          } else {
+            send(event.type, {});
+          }
         };
 
         try {
-          send('session_started', { sessionId, question, domain, maxRounds });
+          emit({ type: 'session_started', data: { sessionId, question, domain, maxRounds } });
 
           await runSession(
             {
@@ -62,24 +63,10 @@ export async function POST(req: NextRequest) {
               userContext,
               dialogueHistory: dialogueHistory as DialogueHistoryEntry[],
             },
-            async (round: RoundResult) => {
-              sendText('socrates_question', round.socratesQuestion);
-              sendText('oracle_answer', round.oracleAnswer);
-              send('synthesis_update', {
-                quickTake: round.quickTake,
-                synthesis: round.synthesisUpdate,
-              });
-              send('round_complete', { roundNumber: round.socratesQuestion ? 1 : 0 });
-            },
-            async (summary) => {
-              send('session_complete', summary);
-              controller.close();
-            },
-            (error) => {
-              send('error', { message: error });
-              controller.close();
-            }
+            emit
           );
+
+          controller.close();
         } catch (err) {
           send('error', { message: err instanceof Error ? err.message : 'Session failed' });
           controller.close();

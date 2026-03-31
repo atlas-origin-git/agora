@@ -1,0 +1,1 @@
+How do I achieve perfect listings, in terms of data quality, without introducing a ton of friction for sellers AND while ridding the platform of bad actors.
