@@ -36,6 +36,9 @@ function SessionContent() {
   const dialogueHistoryRef = useRef<{ role: 'user' | 'assistant'; content: string }[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const roundCompleteCountRef = useRef(0);
+  const currentSocratesRef = useRef('');
+  const currentOracleRef = useRef('');
+  const mountedRef = useRef(false);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -61,13 +64,17 @@ function SessionContent() {
           break;
 
         case 'socrates_question': {
-          setCurrentSocrates(data.text as string);
+          const text = data.text as string;
+          currentSocratesRef.current = text;
+          setCurrentSocrates(text);
+          currentOracleRef.current = '';
           setCurrentOracle('');
           break;
         }
 
         case 'oracle_answer': {
           const answer = data.text as string;
+          currentOracleRef.current = answer;
           setCurrentOracle(answer);
           break;
         }
@@ -78,34 +85,36 @@ function SessionContent() {
           setSynthesisQuickTake(quickTake);
           setSynthesisFull(synthesis);
 
-          // Commit current round to messages
-          setCurrentSocrates((prevS) => {
-            setCurrentOracle((prevO) => {
-              if (prevS && prevO) {
-                dialogueHistoryRef.current.push({ role: 'user', content: prevS });
-                dialogueHistoryRef.current.push({ role: 'assistant', content: prevO });
-                roundCompleteCountRef.current += 1;
-                setCurrentRound(roundCompleteCountRef.current);
-                const socratesMsg: Message = {
-                  id: `socrates-${Date.now()}`,
-                  role: 'socrates',
-                  content: prevS,
-                  timestamp: Date.now(),
-                  round: roundCompleteCountRef.current,
-                };
-                const oracleMsg: Message = {
-                  id: `oracle-${Date.now()}`,
-                  role: 'oracle',
-                  content: prevO,
-                  timestamp: Date.now() + 1,
-                  round: roundCompleteCountRef.current,
-                };
-                setMessages((prevMsgs) => [...prevMsgs, socratesMsg, oracleMsg]);
-              }
-              return prevO;
-            });
-            return prevS;
-          });
+          // Commit current round to messages using refs (avoids nested setState)
+          const prevS = currentSocratesRef.current;
+          const prevO = currentOracleRef.current;
+          if (prevS && prevO) {
+            dialogueHistoryRef.current.push({ role: 'user', content: prevS });
+            dialogueHistoryRef.current.push({ role: 'assistant', content: prevO });
+            roundCompleteCountRef.current += 1;
+            setCurrentRound(roundCompleteCountRef.current);
+            const socratesMsg: Message = {
+              id: `socrates-${Date.now()}`,
+              role: 'socrates',
+              content: prevS,
+              timestamp: Date.now(),
+              round: roundCompleteCountRef.current,
+            };
+            const oracleMsg: Message = {
+              id: `oracle-${Date.now()}`,
+              role: 'oracle',
+              content: prevO,
+              timestamp: Date.now() + 1,
+              round: roundCompleteCountRef.current,
+            };
+            setMessages((prevMsgs) => [...prevMsgs, socratesMsg, oracleMsg]);
+          }
+
+          // Clear stale streaming content (Bug 4)
+          currentSocratesRef.current = '';
+          currentOracleRef.current = '';
+          setCurrentSocrates('');
+          setCurrentOracle('');
           break;
         }
 
@@ -130,6 +139,10 @@ function SessionContent() {
 
   useEffect(() => {
     if (!question) return;
+
+    // Prevent duplicate connections from React 18 Strict Mode double-mount
+    if (mountedRef.current) return;
+    mountedRef.current = true;
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -297,6 +310,21 @@ function SessionContent() {
     abortControllerRef.current?.abort();
     setIsEnded(true);
     setIsLoading(false);
+
+    // Generate summary from accumulated messages for early end
+    setMessages((currentMessages) => {
+      const socratesQs = currentMessages
+        .filter((m) => m.role === 'socrates')
+        .map((m) => m.content);
+      if (socratesQs.length > 0) {
+        setSummaryData({
+          quickTake: `The dialogue explored ${socratesQs.length} round${socratesQs.length > 1 ? 's' : ''} — review the synthesis panel for the full picture.`,
+          synthesis: '',
+          questions: socratesQs,
+        });
+      }
+      return currentMessages;
+    });
     setShowSummary(true);
   };
 

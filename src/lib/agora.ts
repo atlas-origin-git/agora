@@ -8,7 +8,7 @@ import {
 
 const anthropic = new Anthropic({
   baseURL: 'https://api.minimax.io/anthropic',
-  authToken: process.env.ANTHROPIC_API_KEY,
+  apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
 export interface DialogueHistoryEntry {
@@ -185,7 +185,10 @@ export async function runSession(
   const socratesQuestions: string[] = [];
 
   try {
-    for (let round = 1; round <= maxRounds; round++) {
+    // Calculate start round from existing dialogue history (Bug 2: resume replays all rounds)
+    const startRound = Math.floor(dialogueHistory.length / 2) + 1;
+
+    for (let round = startRound; round <= maxRounds; round++) {
       if (signal?.aborted) {
         onError('Session aborted by user');
         return;
@@ -240,14 +243,37 @@ export async function runSession(
       await onRound(roundResult);
     }
 
-    // Session complete
-    const finalSynthesis = socratesQuestions.length > 0
-      ? dialogueHistory.map(e => e.content).join('\n\n')
-      : '';
+    // Session complete — generate a real final synthesis from the full dialogue
+    let finalQuickTake = 'The dialogue has concluded.';
+    let finalSynthesis = '';
+
+    if (dialogueHistory.length >= 2) {
+      // Build a combined Q&A summary for the synthesis call
+      const allQA = [];
+      for (let i = 0; i < dialogueHistory.length; i += 2) {
+        if (dialogueHistory[i] && dialogueHistory[i + 1]) {
+          allQA.push(`Q: ${dialogueHistory[i].content}\nA: ${dialogueHistory[i + 1].content}`);
+        }
+      }
+      const combinedDialogue = allQA.join('\n\n');
+
+      try {
+        const { synthesis, quickTake } = await callSynthesis(
+          `Final synthesis of the complete dialogue:\n${combinedDialogue}`,
+          `This is the final summary of ${socratesQuestions.length} rounds of Socratic dialogue about: ${config.question}`,
+          config.question
+        );
+        finalQuickTake = quickTake;
+        finalSynthesis = synthesis;
+      } catch {
+        // Fallback if synthesis call fails
+        finalSynthesis = `Session explored ${socratesQuestions.length} rounds of dialogue.\n\n${socratesQuestions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`;
+      }
+    }
 
     await onComplete({
-      quickTake: 'The dialogue has concluded — review the synthesis panel for the full picture.',
-      synthesis: `Session Summary:\n\nKey questions explored:\n${socratesQuestions.map((q, i) => `${i + 1}. ${q}`).join('\n')}\n\nFull dialogue available in the session history above.`,
+      quickTake: finalQuickTake,
+      synthesis: finalSynthesis,
       questions: socratesQuestions,
     });
   } catch (err) {
