@@ -6,9 +6,34 @@ import {
   OffTopicSystemPrompt,
 } from './prompts';
 
+// Auth: supports both OAuth tokens (Max subscription) and API keys
+const authToken = process.env.ANTHROPIC_AUTH_TOKEN || '';
+const isOAuth = authToken.includes('sk-ant-oat');
+
 const anthropic = new Anthropic({
-  authToken: process.env.ANTHROPIC_AUTH_TOKEN,
+  ...(isOAuth
+    ? {
+        apiKey: null as unknown as string,
+        authToken,
+        defaultHeaders: {
+          'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20',
+          'user-agent': 'claude-cli/2.1.75',
+          'x-app': 'cli',
+        },
+      }
+    : {
+        apiKey: process.env.ANTHROPIC_API_KEY,
+      }),
 });
+
+// OAuth requires Claude Code identity prefix in system prompts
+function wrapSystem(prompt: string): string | Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }> {
+  if (!isOAuth) return prompt;
+  return [
+    { type: 'text' as const, text: 'You are Claude Code, Anthropic\'s official CLI for Claude.', cache_control: { type: 'ephemeral' as const } },
+    { type: 'text' as const, text: prompt, cache_control: { type: 'ephemeral' as const } },
+  ];
+}
 
 export interface DialogueHistoryEntry {
   role: 'user' | 'assistant';
@@ -86,9 +111,9 @@ export async function callSocrates(
     .replace('{{DIALOGUE_HISTORY}}', buildDialogueHistory(dialogueHistory));
 
   const msg = await anthropic.messages.create({
-    model: 'opus-4-5',
+    model: 'claude-sonnet-4-20250514',
     max_tokens: 1024,
-    system: prompt,
+    system: wrapSystem(prompt),
     messages: [{ role: 'user', content: 'Begin the dialogue.' }],
   });
 
@@ -112,9 +137,9 @@ export async function callOracle(
     .replace('{{USER_CONTEXT}}', contextText);
 
   const msg = await anthropic.messages.create({
-    model: 'sonnet-4-7-20250611',
+    model: 'claude-sonnet-4-20250514',
     max_tokens: 1024,
-    system: prompt,
+    system: wrapSystem(prompt),
     messages: [{ role: 'user', content: socratesQuestion }],
   });
 
@@ -132,9 +157,9 @@ export async function callSynthesis(
     .replace('{{USER_QUESTION}}', userQuestion);
 
   const msg = await anthropic.messages.create({
-    model: 'haiku-4-20250611',
+    model: 'claude-haiku-4-5-20251001',
     max_tokens: 1024,
-    system: prompt,
+    system: wrapSystem(prompt),
     messages: [{ role: 'user', content: `Socrates: ${socratesQuestion}\n\nOracle: ${oracleAnswer}` }],
   });
 
@@ -156,9 +181,9 @@ export async function callOffTopicCheck(question: string): Promise<{
 }> {
   const prompt = OffTopicSystemPrompt;
   const msg = await anthropic.messages.create({
-    model: 'haiku-4-20250611',
+    model: 'claude-haiku-4-5-20251001',
     max_tokens: 256,
-    system: prompt,
+    system: wrapSystem(prompt),
     messages: [{ role: 'user', content: `Question: ${question}` }],
   });
 

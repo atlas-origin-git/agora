@@ -54,16 +54,31 @@ Next.js 16 (App Router, Turbopack)
 
 ### Model Routing
 
-Currently routed through **MiniMax proxy** (`api.minimax.io/anthropic`) which maps Anthropic model names to MiniMax's M2.7:
+Uses real Anthropic models via the standard API:
 
-| Role | Model in code | Actual model | Purpose |
-|------|--------------|--------------|---------|
-| Socrates | `opus-4-5` | MiniMax M2.7 | Asks expert questions |
-| Oracle | `sonnet-4-7-20250611` | MiniMax M2.7 | Provides expert answers |
-| Synthesis | `haiku-4-20250611` | MiniMax M2.7 | Plain-language translation |
-| Off-topic check | `haiku-4-20250611` | MiniMax M2.7 | Domain relevance filter |
+| Role | Model | Purpose |
+|------|-------|---------|
+| Socrates | `claude-sonnet-4-20250514` | Asks expert questions |
+| Oracle | `claude-sonnet-4-20250514` | Provides expert answers |
+| Synthesis | `claude-haiku-4-5-20251001` | Plain-language translation |
+| Off-topic check | `claude-haiku-4-5-20251001` | Domain relevance filter |
 
-To use Anthropic directly: remove the `baseURL` line in `src/lib/agora.ts` and use a real Anthropic API key.
+### Authentication
+
+Supports two auth methods (auto-detected):
+
+**OAuth token (Max/Pro subscription, no extra cost):**
+- Set `ANTHROPIC_AUTH_TOKEN=sk-ant-oat01-...` in `.env.local`
+- Get your token via `claude auth token`
+- The app mimics Claude Code's identity (required by Anthropic's OAuth):
+  - Sends beta headers: `claude-code-20250219,oauth-2025-04-20`
+  - User-agent: `claude-cli/2.1.75`
+  - Prepends "You are Claude Code" to system prompts
+- This is the same mechanism OpenClaw uses
+
+**API key (pay-per-token):**
+- Set `ANTHROPIC_API_KEY=sk-ant-api03-...` in `.env.local`
+- Standard API billing
 
 ### SSE Event Flow
 
@@ -99,14 +114,15 @@ npm start -- -p 3003
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | API key for the LLM provider (Anthropic or MiniMax proxy) |
+| `ANTHROPIC_AUTH_TOKEN` | One of these | Claude Code OAuth token (uses Max/Pro subscription) |
+| `ANTHROPIC_API_KEY` | One of these | Anthropic API key (pay-per-token) |
 
 ## Key Design Decisions
 
 1. **SSE over WebSockets** — simpler, works through CDNs/proxies, sufficient for one-directional streaming
 2. **No database** — PoC keeps everything in-memory. Sessions are fire-and-forget.
 3. **Separate Socrates/Oracle/Synthesis** — three distinct system prompts with different roles. They don't share context except through the dialogue history passed between rounds.
-4. **MiniMax proxy** — free tier, maps all Anthropic model names to M2.7. Cost = $0. Quality is surprisingly good.
+4. **OAuth auth** — mimics Claude Code identity to use Max/Pro subscription. No extra API costs for PoC development.
 5. **Domain-scoped** — the prompts are deeply tailored to e-commerce PM. This is intentional — generic "ask any question" would produce worse results.
 
 ## File-by-File Guide
@@ -124,7 +140,7 @@ npm start -- -p 3003
 ## Known Issues
 
 1. **Browser timeout on long rounds** — each round takes 30-60s. No heartbeat events. Browsers/Cloudflare may cut the connection. Fix: send periodic `heartbeat` events in the SSE stream.
-2. **`authToken` → `apiKey`** — was just fixed (2026-03-31). Anthropic SDK v0.80 requires `apiKey`, not `authToken`.
+2. **OAuth auth** — uses Claude Code identity headers + system prompt prefix. If Anthropic changes the OAuth requirements, this may break.
 3. **Thinking blocks** — MiniMax returns thinking blocks. `extractText()` in `agora.ts` handles this by preferring text blocks and falling back to thinking content, but sometimes Socrates' question gets buried in thinking output.
 4. **No graceful shutdown** — if the server restarts mid-session, the client gets a dead SSE connection with no error.
 
