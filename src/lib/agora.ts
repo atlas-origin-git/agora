@@ -7,8 +7,7 @@ import {
 } from './prompts';
 
 const anthropic = new Anthropic({
-  baseURL: 'https://api.minimax.io/anthropic',
-  apiKey: process.env.ANTHROPIC_API_KEY,
+  authToken: process.env.ANTHROPIC_AUTH_TOKEN,
 });
 
 export interface DialogueHistoryEntry {
